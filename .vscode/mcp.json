@@ -1,0 +1,11 @@
+{
+    "servers": {
+        "pw-context-python": {
+            "command": "python",
+            "args": [
+                "-m",
+                "pw_mcp.server"
+            ]
+        }
+    }
+}
