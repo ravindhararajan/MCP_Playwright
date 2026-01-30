@@ -1,0 +1,80 @@
+CREATE OR ALTER PROCEDURE dbo.usp_GetDcaQueuePressure
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME = GETDATE();
+
+    DECLARE 
+        @WaitingCount INT,
+        @AvgWaitMinutes FLOAT,
+        @Arrivals INT,
+        @Processed INT,
+        @BacklogDelta INT,
+        @PressureScore FLOAT,
+        @PressureLevel VARCHAR(20);
+
+    /* 1️⃣ Transactions currently waiting */
+    SELECT @WaitingCount = COUNT(*)
+    FROM DCA_Transactions
+    WHERE IsComplete = 0
+      AND IsTransactionProcessed = 0;
+
+    /* 2️⃣ Average waiting time (in minutes) */
+    SELECT @AvgWaitMinutes = AVG(DATEDIFF(MINUTE, 
+                              COALESCE(TransactionSubmittedDate, CreatedDate), 
+                              @Now))
+    FROM DCA_Transactions
+    WHERE IsComplete = 0
+      AND IsTransactionProcessed = 0;
+
+    IF @AvgWaitMinutes IS NULL SET @AvgWaitMinutes = 0;
+
+    /* 3️⃣ New arrivals in last 10 minutes */
+    SELECT @Arrivals = COUNT(*)
+    FROM DCA_Transactions
+    WHERE COALESCE(TransactionSubmittedDate, CreatedDate) >= DATEADD(MINUTE, -10, @Now);
+
+    /* 4️⃣ Processed in last 10 minutes */
+    SELECT @Processed = COUNT(*)
+    FROM DCA_Transactions
+    WHERE IsComplete = 1
+      AND IsTransactionProcessed = 1
+      AND UpdatedDate >= DATEADD(MINUTE, -10, @Now);
+
+    SET @BacklogDelta = ISNULL(@Arrivals,0) - ISNULL(@Processed,0);
+
+    /* 5️⃣ Convert to pressure score (0 to 1) */
+
+    DECLARE @QueueScore FLOAT = CASE WHEN @WaitingCount >= 200 THEN 1 ELSE @WaitingCount / 200.0 END;
+    DECLARE @WaitScore  FLOAT = CASE WHEN @AvgWaitMinutes >= 60 THEN 1 ELSE @AvgWaitMinutes / 60.0 END;
+    DECLARE @BacklogScore FLOAT = 
+        CASE 
+            WHEN @BacklogDelta <= 0 THEN 0
+            WHEN @BacklogDelta >= 50 THEN 1
+            ELSE @BacklogDelta / 50.0
+        END;
+
+    SET @PressureScore = (0.4 * @QueueScore) + (0.4 * @WaitScore) + (0.2 * @BacklogScore);
+
+    /* 6️⃣ Pressure level label */
+    SET @PressureLevel =
+        CASE 
+            WHEN @PressureScore < 0.3 THEN 'LOW'
+            WHEN @PressureScore < 0.6 THEN 'MEDIUM'
+            WHEN @PressureScore < 0.8 THEN 'HIGH'
+            ELSE 'CRITICAL'
+        END;
+
+    /* 7️⃣ Output */
+    SELECT
+        @Now AS AsOfTime,
+        @WaitingCount AS WaitingTransactions,
+        @AvgWaitMinutes AS AvgWaitMinutes,
+        @Arrivals AS ArrivalsLast10Min,
+        @Processed AS ProcessedLast10Min,
+        @BacklogDelta AS BacklogChange,
+        @PressureScore AS PressureScore_0to1,
+        @PressureLevel AS PressureLevel;
+END
+GO
